@@ -1,0 +1,14 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+dist/
+keystore/
+*.jks
+RESULT-IN-C-sb-client.txt
+build.log
+*.log
+*.apk
+*.idsig
+*.tmp
+sb-client-error.txt
+.DS_Store

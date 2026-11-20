@@ -1,0 +1,42 @@
+name: Setup Android toolchain
+description: JDK, Android SDK/NDK и Rust-таргеты для сборки APK
+
+runs:
+  using: composite
+  steps:
+    - name: JDK 21
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Rust Android targets
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android,armv7-linux-androideabi
+
+    - name: Android SDK packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+        export ANDROID_SDK_ROOT="$ANDROID_HOME"
+        SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        if [ ! -x "$SDKMANAGER" ]; then
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f 2>/dev/null | sort -V | tail -n 1)"
+        fi
+        [ -n "$SDKMANAGER" ] && [ -x "$SDKMANAGER" ] || {
+          echo "sdkmanager not found under $ANDROID_HOME/cmdline-tools" >&2
+          exit 1
+        }
+        echo "sdkmanager: $SDKMANAGER"
+        yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null 2>&1 || true
+        "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
+          "platform-tools" \
+          "platforms;android-36" \
+          "build-tools;36.0.0" \
+          "ndk;27.0.12077973"
+        echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+        echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"

@@ -1,0 +1,9 @@
+{
+  "identifier": "main-window",
+  "description": "Главное окно-лаунчер может вызывать команды приложения. Окно SkinBase (skinbase) capabilities не имеет вообще: удалённый сайт полностью лишён доступа к IPC Tauri.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "global-shortcut:default"
+  ]
+}

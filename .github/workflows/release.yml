@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Существующий тег (например v1.0.0)'
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            bundles: nsis,msi
+          - name: linux
+            os: ubuntu-24.04
+            bundles: deb,appimage
+          - name: macos
+            os: macos-latest
+            bundles: dmg,app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: ./.github/actions/setup-build
+      - name: Сборка десктопа (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/build.sh --desktop --ci --bundles "${{ matrix.bundles }}"
+      - name: Сборка десктопа (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npx tauri build --ci --bundles ${{ matrix.bundles }}
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Remove-Item dist\FAILED.txt -ErrorAction SilentlyContinue
+          Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe, `
+                        src-tauri\target\release\bundle\msi\*.msi -ErrorAction SilentlyContinue |
+            Copy-Item -Destination dist -Force
+          Get-ChildItem dist | ForEach-Object { "{0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB) }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: ./.github/actions/setup-build
+      - uses: ./.github/actions/setup-android
+
+      - name: Подготовить keystore из GitHub Secrets
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${KEYSTORE_PASS:-}" ]; then
+            mkdir -p keystore
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > keystore/sbclient.jks
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "SB_KEYSTORE_PATH=$PWD/keystore/sbclient.jks" >> "$GITHUB_ENV"
+            echo "SB_KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+            [ -n "${KEY_PASS:-}" ] && echo "SB_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+            [ -n "${KEYSTORE_ALIAS:-}" ] && echo "SB_KEY_ALIAS=$KEYSTORE_ALIAS" >> "$GITHUB_ENV"
+            echo "Keystore из секретов подготовлен."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Секреты подписи не заданы — будет собран debug APK."
+          fi
+
+      - name: Сборка APK (release + подпись)
+        if: steps.signing.outputs.available == 'true'
+        shell: bash
+        run: bash scripts/build.sh --android --ci --signed --targets aarch64,armv7
+
+      - name: Сборка APK (debug fallback)
+        if: steps.signing.outputs.available != 'true'
+        shell: bash
+        run: bash scripts/build.sh --android --ci --debug --targets aarch64,armv7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: GitHub Release
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+      - name: Собрать файлы релиза
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find release-artifacts -type f ! -name 'READY.txt' -exec cp -f {} release/ \;
+          cp -f release-artifacts/*/READY.txt release/ 2>/dev/null || true
+          [ -n "$(ls -A release)" ] || { echo "Нет артефактов для релиза" >&2; exit 1; }
+          ls -lh release
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
